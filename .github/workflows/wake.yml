@@ -1,0 +1,45 @@
+name: 지니TV 깨우기
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"   # 30분마다 (UTC 기준 매시 7분·37분)
+  workflow_dispatch:
+    inputs:
+      now:
+        description: "지금 바로 깨우기 (시험)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: wake-genie
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet androidtvremote2
+      - name: 알람 1분 전에 깨우기
+        env:
+          GENIE_CERT: ${{ secrets.GENIE_CERT }}
+          GENIE_KEY: ${{ secrets.GENIE_KEY }}
+          DATA_TOKEN: ${{ secrets.DATA_TOKEN }}
+          GENIE_HOST: ${{ vars.GENIE_HOST }}
+        run: python wake.py ${{ inputs.now && '--now' || '' }}
+      # 공개 저장소의 예약 실행은 60일 동안 변경이 없으면 꺼지므로 일요일마다 기록을 남긴다
+      - name: 살아 있음 기록 (일요일)
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(TZ=Asia/Seoul date +%u)" = 7 ] && [ "$(TZ=Asia/Seoul date +%H)" = 12 ]; then
+            date -u +%FT%TZ > keepalive.txt
+            git config user.name "tvhome-waker"; git config user.email "actions@users.noreply.github.com"
+            git add keepalive.txt && git commit -qm "살아 있음" && git push -q || true
+          fi
