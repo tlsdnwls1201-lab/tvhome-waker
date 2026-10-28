@@ -2,7 +2,7 @@ name: 지니TV 깨우기
 
 on:
   schedule:
-    - cron: "7,37 * * * *"   # 30분마다 (UTC 기준 매시 7분·37분)
+    - cron: "3-59/10 * * * *"   # 10분마다 (매시 정각의 혼잡을 피해 3분·13분…). GitHub가 자주 건너뛰어서 촘촘히 건다
   workflow_dispatch:
     inputs:
       now:
@@ -20,7 +20,7 @@ permissions:
 jobs:
   wake:
     runs-on: ubuntu-latest
-    timeout-minutes: 85
+    timeout-minutes: 345   # 알람 5시간 반 전부터 기다릴 수 있게 (GitHub 한도 6시간)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
