@@ -8,7 +8,12 @@ GitHub의 예약 실행은 몇 시간씩 빠지기도 해서, 알람 몇 시간 
 알람 화면(노래 → 버튼 → 브리핑)을 열어 방송 소리보다 노래가 먼저 나오게 한다.
 보내는 곳은 지니TV(GENIE_HOST) 하나뿐이다.
 
-필요한 비밀 값(Secrets): GENIE_CERT, GENIE_KEY (리모컨 인증서), DATA_TOKEN (데이터 읽기 토큰)
+두 곳에서 돈다:
+- 이 저장소(10분마다 예약 실행): 예비. 예약 실행이 빠지기도 한다.
+- 데이터 저장소(--request): 지니TV 앱이 알람 5분 전에 wake.json을 남기면 바로 돈다. 대기 중에도 앱 예약은 정확하다.
+앱이 요청해 둔 알람이면 예비 쪽은 30초 늦게 확인만 해서 전원 키를 두 번 누르지 않는다.
+
+필요한 비밀 값(Secrets): GENIE_CERT, GENIE_KEY (리모컨 인증서), DATA_TOKEN (데이터 읽기 토큰, 데이터 저장소에서는 필요 없음)
 변수(Variables): GENIE_HOST (지니TV 공인 IP)
 """
 import asyncio
@@ -24,25 +29,43 @@ from androidtvremote2 import AndroidTVRemote
 
 KST = dt.timezone(dt.timedelta(hours=9))
 DATA_URL = "https://api.github.com/repos/tlsdnwls1201-lab/tvhome-data/contents/data.json"
+WAKE_URL = "https://api.github.com/repos/tlsdnwls1201-lab/tvhome-data/contents/wake.json"
 DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]  # datetime.weekday() 순서
 LOOKAHEAD = dt.timedelta(hours=5, minutes=30)  # 예약 실행이 몇 시간씩 빠져도 한 번만 걸리면 되게 (작업 한도 6시간 안)
 RECHECK = 600                         # 기다리는 동안 10분마다 설정을 다시 읽는다 (알람을 바꾸거나 끄면 따른다)
 EARLY = dt.timedelta(seconds=15)      # 켜지는 데 걸리는 만큼 먼저 전원을 넣는다
 APP = "com.woojin.tvhome"
 GUARD = 25                            # 알람 화면을 연 뒤 이 시간(초) 동안 앞에 있는지 지킨다
+BACKUP_DELAY = 30                     # 앱이 요청한 알람이면 예비 실행은 알람 이 시간(초) 뒤에 확인만 한다
 
 
 def log(*a):
     print(dt.datetime.now(KST).strftime("%H:%M:%S"), *a, flush=True)
 
 
-def load_data():
-    req = urllib.request.Request(DATA_URL, headers={
+def load_json(url, env_file):
+    """데이터 저장소의 파일. 데이터 저장소 안에서 돌 때는 받아 둔 파일(env_file 환경 변수)을 읽는다."""
+    if os.environ.get(env_file):
+        with open(os.environ[env_file], encoding="utf-8") as f:
+            return json.load(f)
+    req = urllib.request.Request(url, headers={
         "Authorization": "Bearer " + os.environ["DATA_TOKEN"],
         "Accept": "application/vnd.github.raw",
     })
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
+
+
+def load_data():
+    return load_json(DATA_URL, "DATA_FILE")
+
+
+def requested_alarm():
+    """지니TV 앱이 남긴 깨우기 요청(wake.json)의 알람 시각. 없거나 읽지 못하면 None."""
+    try:
+        return dt.datetime.fromisoformat(load_json(WAKE_URL, "WAKE_FILE")["alarm"])
+    except Exception:
+        return None
 
 
 def next_alarm(data, now):
@@ -145,13 +168,29 @@ def wait_for_alarm(at):
 
 def main():
     now = dt.datetime.now(KST)
+    late = False
     if "--now" in sys.argv:  # 수동 시험: 바로 깨우기
         at = now + EARLY
+    elif "--request" in sys.argv:  # 지니TV 앱이 알람 5분 전에 남긴 요청으로 시작했다
+        at = requested_alarm()
+        log("앱이 요청한 알람:", at.strftime("%m/%d %H:%M") if at else "없음")
+        if not at or at < now - dt.timedelta(minutes=2):
+            log("요청한 알람이 이미 지났어요")
+            return
+        at = wait_for_alarm(at)
+        if not at:
+            return
     else:
         at = wait_for_alarm(next_alarm(load_data(), now))
         if not at:
             return
-    ok = asyncio.run(wake_and_ring(os.environ["GENIE_HOST"], at, late=dt.datetime.now(KST) > at))
+        if requested_alarm() == at:
+            # 앱의 요청으로 데이터 저장소의 실행이 깨운다: 같이 누르면 전원이 다시 꺼지므로 늦게 확인만 한다
+            log("앱이 요청한 알람이라 다른 실행이 깨워요.", BACKUP_DELAY, "초 뒤에 확인만 해요")
+            time.sleep(max(0, (at - dt.datetime.now(KST)).total_seconds()) + BACKUP_DELAY)
+            late = True
+    late = late or dt.datetime.now(KST) > at
+    ok = asyncio.run(wake_and_ring(os.environ["GENIE_HOST"], at, late=late))
     sys.exit(0 if ok else 1)
 
 
